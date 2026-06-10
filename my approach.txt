@@ -1,0 +1,134 @@
+PROBLEM STATEMENT
+
+The task is a demand forecasting regression problem. Given features
+about roads, locations (geohash), time, weather, and other conditions,
+the goal is to predict `demand` at each data point. The evaluation
+metric is R² score, and the hackathon score is calculated as:
+    Score = max(0, 100 * R²)
+
+OVERALL APPROACH
+
+1. Load train and test CSVs.
+2. Perform exploratory data analysis (EDA) using .info(), .describe(),
+   and null checks.
+3. Handle missing values for RoadType, Temperature, and Weather columns.
+4. Engineer new features from raw columns.
+5. Encode categorical variables using LabelEncoder.
+6. Perform a time-based train/validation split (80/20).
+7. Tune an XGBoost Regressor using Bayesian Optimization with
+   TimeSeriesSplit cross-validation.
+8. Retrain the best model on the full training data.
+9. Generate predictions on the test set and save as submission.csv.
+
+
+FEATURE ENGINEERING
+ 
+1. TIMESTAMP PARSING → hour (float)
+   - The `timestamp` column (in HH:MM format) is converted to a decimal hour value.
+       ex: parse_timestamp("14:30") → 14.5
+   - This converts a string-based time into a continuous numeric feature.
+ 
+2. CYCLICAL TIME ENCODING (hour_sin, hour_cos)
+   - To capture the cyclic nature of hours (hour 23 is close to hour 0), sine and cosine transformations are applied:
+       hour_sin = sin(2π × hour / 24)
+       hour_cos = cos(2π × hour / 24)
+   - This prevents the model from treating time as a linear feature.
+ 
+3. HISTORICAL DEMAND (historical_demand)
+   - Mean demand is computed per geohash from the training set.
+   - Each row is appended with its geohash's average historical demand.
+   - For unseen geohashes in the test set, the global mean demand is used.
+   - This acts as a powerful location-level demand.
+ 
+4. BINARY ENCODING
+   - LargeVehicles: 'Not Allowed' → 0, 'Allowed' → 1
+   - Landmarks: 'No' → 0, 'Yes' → 1
+ 
+5. LABEL ENCODING
+   - RoadType, Weather, and geohash are label-encoded after fitting the encoder on the combined (train + test) vocabulary to avoid unseen category issues at inference time.
+
+
+MISSING VALUE IMPUTATION STRATEGY
+
+RoadType (categorical):
+   - Filled using the mode of RoadType within each geohash group. Any remaining NaNs filled with the global mode of RoadType.
+
+Temperature (numerical):
+   - Filled using the median Temperature grouped by (day, hour). Any remaining NaNs filled with the global median.
+
+Weather (categorical):
+   - Filled using the mode of Weather grouped by (day, hour). Any remaining NaNs filled with the global mode.
+
+This layered imputation strategy preserves temporal and spatial context before falling back to global statistics.
+
+MODEL
+
+XGBoost Regressor (XGBRegressor):
+  - Gradient boosting on decision trees.
+  - Optimized for regression tasks.
+  - Parameters: random_state=42, n_jobs=-1 (parallel computation).
+
+Hyperparameter Tuning: Bayesian Optimization (BayesSearchCV)
+  - Library: scikit-optimize (skopt)
+  - 30 iterations of Bayesian search over the following 
+hyperparameters:
+      n_estimators      : Integer [100, 500]
+      learning_rate     : Real [0.001, 0.1] (log-uniform)
+      max_depth         : Integer [1, 10]
+      subsample         : Real [0.5, 1.0]
+      colsample_bytree  : Real [0.5, 1.0]
+      min_child_weight  : Integer [10, 20]
+  - Scoring: R² (r2)
+
+Cross-Validation: TimeSeriesSplit (n_splits=3)
+  - Respects temporal ordering of the data.
+  - Prevents data leakage from future to past during CV.
+
+Train/Validation Split:
+  - Time-based: first 80% for training, last 20% for
+    validation. 
+
+Final Model:
+  - Best estimator from BayesSearchCV is retrained on the full training dataset before generating test predictions.
+
+
+TOOLS AND LIBRARIES USED
+ 
+Library             | Purpose
+--------------------|------------------------------------------
+pandas              | Data loading, manipulation, imputation
+numpy               | Numerical operations (sin/cos encoding)
+scikit-learn        | LabelEncoder, R² metric, TimeSeriesSplit
+xgboost             | XGBRegressor (main ML model)
+scikit-optimize     | BayesSearchCV for hyperparameter tuning
+(skopt)             | (installed via pip during execution)
+
+
+SOURCE FILES
+ 
+Input Files:
+  - /content/train.csv   — Training dataset with `demand` target column
+  - /content/test.csv    — Test dataset (no `demand` column)
+ 
+Output File:
+  - submission.csv       — Two columns: Index, demand (predictions)
+ 
+Notebook File:
+  - Flipkart_Grid_lock.ipynb — This analysis notebook
+
+
+FEATURE SET USED FOR TRAINING 
+All columns except: Index, timestamp, demand
+Final features include:
+  - day
+  - hour               (derived from timestamp)
+  - geohash            (label-encoded)
+  - RoadType           (label-encoded, NaN imputed)
+  - LargeVehicles      (binary encoded)
+  - Landmarks          (binary encoded)
+  - Temperature        (NaN imputed)
+  - Weather            (label-encoded, NaN imputed)
+  - hour_sin           (cyclical encoding)
+  - hour_cos           (cyclical encoding)
+  - historical_demand  (geohash-level mean demand from train)
+ 
